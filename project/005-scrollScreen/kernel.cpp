@@ -1,0 +1,142 @@
+// 屏幕常量
+const int VIDEO_WIDTH = 80;
+const int VIDEO_HEIGHT = 25;
+const char AMI_BIOS_COLOR = 0x17; 
+
+int cursor_x = 0;
+int cursor_y = 0;
+
+// --- 1. 先定义底层硬件操作函数 ---
+
+// 向 I/O 端口写入一个字节
+void outb(unsigned short port, unsigned char val) {
+    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+// 更新硬件光标位置
+void update_cursor(int x, int y) {
+    unsigned short pos = y * VIDEO_WIDTH + x;
+    outb(0x3D4, 0x0E); // 寄存器 0x0E: 光标位置高8位
+    outb(0x3D5, (unsigned char)((pos >> 8) & 0xFF));
+    outb(0x3D4, 0x0F); // 寄存器 0x0F: 光标位置低8位
+    outb(0x3D5, (unsigned char)(pos & 0xFF));
+}
+
+// --- 2. 再定义高层显示函数 ---
+
+void clear_screen() {
+    char *video_memory = (char *)0xB8000;
+    for (int i = 0; i < VIDEO_WIDTH * VIDEO_HEIGHT; i++) {
+        video_memory[i * 2] = ' ';
+        video_memory[i * 2 + 1] = AMI_BIOS_COLOR;
+    }
+    cursor_x = 0;
+    cursor_y = 0;
+    update_cursor(cursor_x, cursor_y);
+}
+
+// 滚屏功能
+void scroll() {
+    char *video_memory = (char *)0xB8000;
+
+    // 1. 将第 1-24 行的内容向上移动一行 (每一行 80*2 个字节)
+    for (int i = 0; i < (VIDEO_HEIGHT - 1) * VIDEO_WIDTH * 2; i++) {
+        video_memory[i] = video_memory[i + VIDEO_WIDTH * 2];
+    }
+
+    // 2. 最后一行填充空格
+    for (int i = (VIDEO_HEIGHT - 1) * VIDEO_WIDTH * 2; i < VIDEO_HEIGHT * VIDEO_WIDTH * 2; i += 2) {
+        video_memory[i] = ' ';
+        video_memory[i + 1] = AMI_BIOS_COLOR;
+    }
+
+    // 3. 光标留在最后一行行首
+    cursor_y = VIDEO_HEIGHT - 1;
+}
+
+// 修改后的 put_char
+void put_char(char c, char color) {
+    char *video_memory = (char *)0xB8000;
+
+    if (c == '\n') {
+        cursor_x = 0;
+        cursor_y++;
+    } else {
+        int offset = (cursor_y * VIDEO_WIDTH + cursor_x) * 2;
+        video_memory[offset] = c;
+        video_memory[offset + 1] = color;
+        cursor_x++;
+    }
+
+    // 如果水平溢出，自动换行
+    if (cursor_x >= VIDEO_WIDTH) {
+        cursor_x = 0;
+        cursor_y++;
+    }
+
+    // 如果垂直溢出，触发滚屏
+    if (cursor_y >= VIDEO_HEIGHT) {
+        scroll();
+    }
+
+    update_cursor(cursor_x, cursor_y);
+}
+
+void kprint(const char *str) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        put_char(str[i], AMI_BIOS_COLOR);
+    }
+}
+
+void kprint_highlight(const char *str) {
+    for (int i = 0; str[i] != '\0'; i++) {
+        put_char(str[i], 0x70); 
+    }
+}
+
+// 定义int
+void kprint_int(int n) {
+    if (n == 0) {
+        put_char('0', AMI_BIOS_COLOR);
+        return;
+    }
+
+    char buf[12]; // 足够存放 32 位整数
+    int i = 0;
+    
+    // 提取每一位数字
+    while (n > 0) {
+        buf[i++] = (n % 10) + '0';
+        n /= 10;
+    }
+
+    // 反转并打印
+    for (int j = i - 1; j >= 0; j--) {
+        put_char(buf[j], AMI_BIOS_COLOR);
+    }
+}
+
+// --- 3. 最后是内核入口 ---
+
+extern "C" void kmain() {
+    clear_screen();
+    
+    kprint(" STRATA OS Revision 1.0.5 \n");
+    kprint(" System Core: Sentry Kernel Active \n");
+    kprint("-----------------------------------\n");
+    kprint(" Hardware Cursor... [Enabled]\n");
+    kprint("\n\n");
+
+    // 记得给 i 赋初值 0
+    for(int i = 0; i < 30; i++) {
+        kprint("Line ");
+        kprint_int(i);
+        kprint(": Testing BIOS scroll...\n");
+    }
+
+    kprint("\n[OK] Scroll Test Finished.");
+    
+    kprint_highlight(" SYSTEM READY. ");
+    
+    while (1);
+}
